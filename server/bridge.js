@@ -972,19 +972,28 @@ async function processClientUpdate(newData, oldData = {}) {
                 checkAndAdd(SHEET_SCHEMA.COL_INSTALL_STATUT, 'M', currentStatusM);
 
                 // --- SYNC CALENDAR ---
-                const d = new Date(installDate);
-                d.setHours(8, 0, 0, 0);
-                const endD = new Date(d.getTime() + 4 * 60 * 60 * 1000);
+                // --- SYNC CALENDAR ---
+                const startDate = new Date(installDate);
+                const calculatedEnd = calculateEstimatedEnd(startDate, newData.nb_led || 0);
+
+                // Google Calendar All-Day Logic (Exclusive End)
+                const gCalStart = new Date(startDate);
+                const gCalEnd = new Date(calculatedEnd);
+                gCalEnd.setDate(gCalEnd.getDate() + 1);
+
+                const toYMD = (d) => d.toISOString().split('T')[0];
+                const shortStart = gCalStart.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+                const shortEnd = calculatedEnd.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
 
                 const installCalId = process.env.CALENDAR_ID_INSTALLATIONS || 'primary';
 
                 try {
                     const event = await createCalendarEvent(installCalId, {
-                        summary: `🛠️ Install : ${newData.nom} (H: ${fDate})`,
+                        summary: `🛠️ ${newData.nb_led || 0} LED - ${newData.nom} (${shortStart} ➔ ${shortEnd})`,
                         location: newData.adresse_brute || '',
-                        description: `Client: ${newData.nom}\nID: ${newData.id}\nEquipe: TM 1\nStatut: ${statusText}`,
-                        start: { dateTime: d.toISOString(), timeZone: 'Europe/Paris' },
-                        end: { dateTime: endD.toISOString(), timeZone: 'Europe/Paris' }
+                        description: `Client: ${newData.nom}\nID: ${newData.id}\nEquipe: TM 1\nStatut: ${statusText}\nDu: ${shortStart} Au: ${shortEnd}`,
+                        start: { date: toYMD(gCalStart) },
+                        end: { date: toYMD(gCalEnd) }
                     }, newData);
                     if (event) console.log(`📅 [Cal] Installation event synced for ${newData.nom}`);
                 } catch (e) {

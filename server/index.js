@@ -477,6 +477,8 @@ async function connectToGoogle() {
         const connected = await googleManager.connect();
         if (connected) {
             console.log("🟢 [Server] Google Manager Connecté (Anti-Blocking Active).");
+            console.log(`📅 ID Agenda Livraisons: ${CALENDAR_ID_LIVRAISONS}`);
+            console.log(`📅 ID Agenda Installations: ${CALENDAR_ID_INSTALLATIONS}`);
 
             // ADAPTER: Rediriger les appels existants vers le GoogleManager (Queue + Retry)
             googleSheetsService = {
@@ -542,6 +544,7 @@ async function createCalendarEvent(calendarId, event) {
     }
     try {
         console.log(`📡 Tentative de création d'événement sur agenda: ${calendarId}`);
+        console.log(`🕒 Horaire: ${event.start?.dateTime} -> ${event.end?.dateTime}`);
         const response = await googleCalendarService.events.insert({
             calendarId: calendarId,
             requestBody: event,
@@ -1354,8 +1357,9 @@ function getSafeCalendarId(clientId) {
     return 'led' + hex;
 }
 
-// NEW: Confirm Planning (Deterministic ID)
+// 4. PLANNING (Full)
 app.post('/api/planning/confirm', mutationLimiter, async (req, res) => {
+    console.log("⚡ [API] /api/planning/confirm HIT", req.body);
     const { clientId, date, camionId, clientName, address, nbLed } = req.body;
     const safeNotify = (typeof notifyUpdate === 'function') ? notifyUpdate : () => { };
 
@@ -1433,25 +1437,58 @@ app.post('/api/planning/confirm', mutationLimiter, async (req, res) => {
         console.log(`✅ [Planning] Supabase Updated for ${clientId}`);
 
         // 2. Google Calendar (Upsert)
-        // 2. Google Calendar (Upsert) - DISABLED ON PLANNING (User Request)
-        /*
         if (googleCalendarService) {
             try {
+                // Fetch fresh client data for the event details
+                const { data: clientData, error: clientFetchError } = await supabase
+                    .from('clients')
+                    .select('nom, prenom, adresse, code_postal, ville, nb_led')
+                    .eq('id', clientId)
+                    .single();
+
+                if (clientFetchError || !clientData) {
+                    console.error("❌ Failed to fetch client data for calendar:", clientFetchError);
+                }
+
+                // Use fetched data, fallback to body data, fallback to defaults
+                const finalName = clientData ? `${clientData.prenom || ''} ${clientData.nom || ''}`.trim() : (clientName || "Client");
+                const finalAddress = clientData ? `${clientData.adresse || ''} ${clientData.code_postal || ''} ${clientData.ville || ''}`.trim() : (address || "");
+                const finalNbLed = clientData && clientData.nb_led ? parseFloat(clientData.nb_led) : (parseFloat(nbLed) || 0);
+
+                console.log(`🔍 [Planning Debug] ID: ${clientId}, Nom: ${finalName}, LEDs Supabase: ${clientData?.nb_led}, LEDs Body: ${nbLed}, Final: ${finalNbLed}`);
+
                 const eventId = getSafeCalendarId(clientId);
-                
-                // FORCE 8am - 9am Paris Time String (No Z) to rely on timeZone field
-                const startDateTime = `${date}T08:00:00`;
-                const endDateTime = `${date}T09:00:00`;
-        
+
+
+                const startDate = new Date(date); // Date with 00:00
+                const calculatedEnd = calculateEstimatedEnd(startDate, finalNbLed);
+
+                console.log(`🧮 [Planning Debug] Start: ${startDate.toISOString()}, End: ${calculatedEnd.toISOString()}`);
+
+                // Google Calendar All-Day Events: End date is EXCLUSIVE (midnight of next day)
+                // If work ends on Jan 20, we want the event to cover Jan 20 provided it ends after 8am?
+                // Actually usually "Chantier" = All Day.
+                // So if calculatedEnd is Jan 20, we want End = Jan 21 for GCal.
+
+                const gCalStart = new Date(startDate);
+                const gCalEnd = new Date(calculatedEnd);
+                gCalEnd.setDate(gCalEnd.getDate() + 1); // Add 1 day for Exclusive End
+
+                // Format YYYY-MM-DD
+                const toYMD = (d) => d.toISOString().split('T')[0];
+
+                const shortStart = gCalStart.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+                const shortEnd = calculatedEnd.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }); // Use real end for display text
+
                 const eventBody = {
-                    summary: `🚚 Livraison : ${clientName} (${nbLed} LEDs)`,
-                    location: address,
-                    description: `Client ID: ${clientId}\nCamion: ${camionId}`,
-                    start: { dateTime: startDateTime, timeZone: 'Europe/Paris' },
-                    end: { dateTime: endDateTime, timeZone: 'Europe/Paris' },
-                    id: eventId 
+                    summary: `🚚 ${finalNbLed} LED - ${finalName} (${shortStart} ➔ ${shortEnd})`,
+                    description: `📅 Du: ${shortStart} Au: ${shortEnd}\nClient: ${finalName}\nAdresse: ${finalAddress}\nNb LEDs: ${finalNbLed}\nCamion: ${camionId}\n\nLien Validation: https://arkos-app.vercel.app/validate?id=${clientId}`,
+                    location: finalAddress,
+                    start: { date: toYMD(gCalStart) }, // ALL DAY EVENT
+                    end: { date: toYMD(gCalEnd) },     // ALL DAY EVENT
+                    id: eventId
                 };
-        
+
                 // Try INSERT first
                 try {
                     await googleCalendarService.events.insert({
@@ -1463,7 +1500,7 @@ app.post('/api/planning/confirm', mutationLimiter, async (req, res) => {
                     // If conflict (409), UPDATE instead
                     if (insertErr.code === 409 || (insertErr.response && insertErr.response.status === 409)) {
                         console.log(`♻️ Event exists (409). Updating ${eventId}...`);
-                         await googleCalendarService.events.update({
+                        await googleCalendarService.events.update({
                             calendarId: CALENDAR_ID_LIVRAISONS,
                             eventId: eventId,
                             requestBody: eventBody
@@ -1476,7 +1513,6 @@ app.post('/api/planning/confirm', mutationLimiter, async (req, res) => {
                 console.error("Calendar Sync Error:", calErr.message);
             }
         }
-        */
 
         safeNotify('clients');
         res.json({ success: true });

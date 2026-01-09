@@ -70,10 +70,10 @@ export const exportLimiter = rateLimit({
     }
 });
 
-// Rate limiter pour les modifications (30 par heure)
+// Rate limiter pour les modifications (300 par minute - DEV MODE)
 export const mutationLimiter = rateLimit({
-    windowMs: 60 * 60 * 1000,
-    max: 30,
+    windowMs: 1 * 60 * 1000,
+    max: 300,
     message: {
         error: 'Trop de modifications'
     }

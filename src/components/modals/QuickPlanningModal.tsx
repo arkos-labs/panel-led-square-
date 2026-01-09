@@ -209,8 +209,6 @@ export function QuickPlanningModal({ client, allClients, isOpen, onClose, onConf
             const cName = `${(c as any).prenom} ${(c as any).nom}`;
             const myName = `${client.prenom} ${client.nom}`;
 
-            // RÈGLE 0 bis : Sécurité par nom (si les IDs déconnent)
-            if (cName.trim().toLowerCase() === myName.trim().toLowerCase()) return;
 
             // RÈGLE 1: Ne bloquer que les clients de la MÊME ZONE
             const cZone = (c as any).zone_pays || 'FR';
@@ -251,7 +249,14 @@ export function QuickPlanningModal({ client, allClients, isOpen, onClose, onConf
             if (!startDate || nbLed <= 0) return;
 
             // Check if start date is valid and reasonable (not year 1970)
-            if (isNaN(startDate.getTime()) || startDate.getFullYear() < 2024) return;
+            if (isNaN(startDate.getTime()) || startDate.getFullYear() < 2024) {
+                // Try brute force french format dd/mm/yyyy
+                const parts = String(startRaw).split('/');
+                if (parts.length === 3) {
+                    startDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+                }
+                if (!startDate || isNaN(startDate.getTime())) return;
+            }
 
             startDate.setHours(0, 0, 0, 0);
 
@@ -597,8 +602,7 @@ export function QuickPlanningModal({ client, allClients, isOpen, onClose, onConf
                                     <button
                                         key={s.date.toISOString()}
                                         onClick={() => handleDateSelect(s.date)}
-                                        // MODIF: On retire le disabled pour permettre l'override
-                                        // disabled={isBlocked}
+                                        disabled={isBlocked}
                                         className={`p-4 rounded-2xl border-2 text-left transition-all flex justify-between items-center ${isBlocked
                                             ? 'border-red-200 bg-red-50 opacity-60 cursor-not-allowed'
                                             : selectedDate && isSameDay(selectedDate, s.date)
@@ -636,9 +640,38 @@ export function QuickPlanningModal({ client, allClients, isOpen, onClose, onConf
                                 locale={fr}
                                 className="w-full flex justify-center"
                                 disabled={(date) => {
-                                    // MODIF: On permet de sélectionner les dates bloquées (override manuel)
-                                    // On ne désactive que les weekends stricto sensu
-                                    return date.getDay() === 0 || date.getDay() === 6;
+                                    // 1. Bloquer weekends (Règle de base)
+                                    if (date.getDay() === 0 || date.getDay() === 6) return true;
+
+                                    // 2. Bloquer si la date est déjà occupée par un autre chantier (STRICT)
+                                    // Utilisation de la logique "blocked" existante
+                                    const dateStr = format(date, 'yyyy-MM-dd');
+
+                                    // Si la date est spécifiquement bloquée
+                                    if (blockedDates.has(dateStr)) return true;
+
+                                    // 3. Bloquer si le NOUVEAU chantier ne tient pas (conflit futur)
+                                    if (client?.nb_led) {
+                                        const end = calculateEstimatedEnd(date, client.nb_led);
+                                        let curr = new Date(date);
+                                        let checks = 0;
+                                        // On vérifie le CHEVAUCHEMENT
+                                        // Si je commence le chantier 'date', est-ce que je tombe sur un jour bloqué avant la fin ?
+                                        while (curr <= end && checks < 60) {
+                                            const currStr = format(curr, 'yyyy-MM-dd');
+                                            if (blockedDates.has(currStr)) return true; // Conflit trouvé !
+
+                                            // Avancer (saut week-end géré par calculateEstimatedEnd mais ici on itère simple)
+                                            // Attention: calculateEstimatedEnd saute les weekends, donc l'intervalle [start, end] est la durée RÉELLE.
+                                            // Notre boucle simple ici check toutes les dates calendaires entre start et end.
+                                            // C'est correct car si un chantier bloque un Mardi, et que mon chantier va du Lundi au Mercredi, je suis bloqué.
+
+                                            curr.setDate(curr.getDate() + 1);
+                                            checks++;
+                                        }
+                                    }
+
+                                    return false;
                                 }}
                                 modifiers={{
                                     zone: (date) => calendarZoneMap[format(date, 'yyyy-MM-dd')] > 0,
@@ -668,7 +701,7 @@ export function QuickPlanningModal({ client, allClients, isOpen, onClose, onConf
                                 }}
                                 modifiersClassNames={{
                                     zone: "bg-blue-50 text-blue-600 font-bold border-blue-100 rounded-lg",
-                                    blocked: "bg-red-100 text-red-400 line-through opacity-40 cursor-not-allowed",
+                                    blocked: "bg-red-100 text-red-400 line-through opacity-40 cursor-not-allowed pointer-events-none",
                                     weekend: "bg-slate-50 text-slate-200 opacity-25 pointer-events-none"
                                 }}
                             />
