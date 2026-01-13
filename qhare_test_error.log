@@ -1,0 +1,9 @@
+
+        Time: 2026-01-13T13:54:33.892Z
+        Error: Qhare API Error 401
+        Stack: Error: Qhare API Error 401
+    at QhareManager._retryWithUrlEncoded (file:///C:/Users/CHERK/OneDrive/Desktop/projet/Square/logiciel/panel%20led/server/qhare_manager.js:95:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async QhareManager.createLead (file:///C:/Users/CHERK/OneDrive/Desktop/projet/Square/logiciel/panel%20led/server/qhare_manager.js:26:20)
+    at async test (file:///C:/Users/CHERK/OneDrive/Desktop/projet/Square/logiciel/panel%20led/scripts/test_qhare.js:23:24)
+        

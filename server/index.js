@@ -54,6 +54,8 @@ const PORT = process.env.PORT || 3001;
 
 console.log("🚀 DEMARRAGE DU SERVEUR - VERSION AVEC FIX HEURE (COLONNE J) & TABS");
 
+// --- START CRON JOBS ---
+import('./cron_qhare.js').then(m => m.default(10)); // Check toutes les 10 min
 
 app.use(securityHeaders);
 app.use(cors());
@@ -64,6 +66,73 @@ app.use(sanitizeInput);
 app.use(suspiciousActivityLogger);
 app.use(csrfProtection);
 app.use(generalLimiter); // Application globale (Niveau 1)
+
+// --- WEBHOOK QHARE (Réception temps réel) ---
+app.post('/api/webhook/qhare', async (req, res) => {
+    // console.log("📥 [Webhook Qhare] Données reçues:", JSON.stringify(req.body));
+
+    try {
+        const lead = req.body;
+
+        // Validation basique
+        if (!lead || (!lead.nom && !lead.id)) {
+            return res.status(400).json({ error: "Payload invalide" });
+        }
+
+        console.log(`🔔 [Webhook] Notification Qhare: ${lead.nom} (Etat: ${lead.etat})`);
+
+        // FILTRE: On n'importe QUE les dossiers "SIGNÉ"
+        const etat = (lead.etat || '').toUpperCase();
+        if (!etat.includes('SIGNÉ') && !etat.includes('SIGNE')) {
+            console.log("⏭️ [Webhook] Ignoré (Pas signé)");
+            return res.json({ status: 'ignored', reason: 'not_signed' });
+        }
+
+        // Insertion / Mise à jour Supabase
+        const { data: existing } = await supabase
+            .from('clients')
+            .select('id')
+            .or(`email.eq.${lead.email},telephone.eq.${lead.telephone},nom.eq.${lead.nom}`)
+            .maybeSingle();
+
+        if (existing) {
+            console.log(`✅ [Webhook] Client déjà existant (ID: ${existing.id}). Mise à jour potentielle...`);
+            // TODO: Update logic if needed
+            return res.json({ status: 'exists', id: existing.id });
+        }
+
+        const newClient = {
+            source: 'Qhare Webhook',
+            nom: lead.nom,
+            prenom: lead.prenom,
+            email: lead.email,
+            telephone: lead.telephone || lead.telephone_portable,
+            adresse_brute: `${lead.adresse || ''} ${lead.code_postal || ''} ${lead.ville || ''}`.trim(),
+            code_postal: lead.code_postal,
+            ville: lead.ville,
+            departement: lead.departement,
+            statut_client: 'NON_PLANIFIÉ',
+            nb_led: 0,
+            chauffage: lead.chauffage,
+            commentaire: `Import Webhook ID: ${lead.id}`
+        };
+
+        const { data: created, error } = await supabase
+            .from('clients')
+            .insert(newClient)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        console.log(`🎉 [Webhook] Client CRÉÉ avec succès: ${created.nom}`);
+        res.json({ status: 'created', id: created.id });
+
+    } catch (e) {
+        console.error("❌ [Webhook] Erreur:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
 
 // Route Proxy VROOM pour éviter les problèmes CORS
 const ORS_API_KEY = process.env.ORS_API_KEY;
@@ -571,6 +640,11 @@ async function createCalendarEvent(calendarId, event) {
 // Endpoint de validation rapide (utilisé par les chauffeurs/poseurs via lien dans Sheets)
 app.get('/api/valider/:clientId/:type', strictLimiter, async (req, res) => {
     const { clientId, type } = req.params;
+
+    // --- HOOK QHARE (Sync) ---
+    // On lance la sync en "fire and forget" (sans attendre) pour ne pas ralentir l'app
+    import('./sync_qhare.js').then(m => m.default(clientId, type)).catch(err => console.error("Sync Error import", err));
+
     if (!googleSheetsService || (!clientId?.startsWith('sheet-') && !clientId?.includes('_'))) {
         return res.send("<h1>Erreur : ID Client invalide ou service Google inaccessible</h1>");
     }
@@ -859,6 +933,13 @@ app.put('/api/clients/:id', validate(updateClientSchema), async (req, res) => {
         if (error) throw error;
 
         console.log(`✅ Client ${id} mis à jour via API`);
+
+        // --- HOOK QHARE (Sync Planification) ---
+        // Si on a modifié une date de travaux ou de livraison, on considère que c'est planifié
+        if (updates.date_install_debut || updates.date_livraison_prevue) {
+            import('./sync_qhare.js').then(m => m.default(id, 'planification', data)).catch(err => console.error("Sync Error", err));
+        }
+
         res.json(data);
     } catch (error) {
         console.error(`❌ Erreur mise à jour client ${id}:`, error);
