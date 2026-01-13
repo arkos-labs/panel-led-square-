@@ -117,13 +117,17 @@ app.post('/api/webhook/qhare', async (req, res) => {
             commentaire: `Import Webhook ID: ${lead.id}`
         };
 
+        // Utilisation de upsert pour être plus robuste
         const { data: created, error } = await supabase
             .from('clients')
-            .insert(newClient)
+            .upsert(newClient, { onConflict: 'email' }) // On se base sur l'email pour éviter doublon
             .select()
             .single();
 
-        if (error) throw error;
+        if (error) {
+            console.error("Erreur SQL Insert:", error);
+            throw error;
+        }
 
         console.log(`🎉 [Webhook] Client CRÉÉ avec succès: ${created.nom}`);
         res.json({ status: 'created', id: created.id });
